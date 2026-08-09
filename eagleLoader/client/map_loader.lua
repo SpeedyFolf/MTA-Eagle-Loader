@@ -3,6 +3,7 @@ lodIDsByResource = {}
 crashZoneMarkers = {}
 local defaultWorldRemovalApplied = false
 local defaultWaterLevelApplied = false
+local defaultWorldOcclusionsEnabled
 
 -- Utility: Read all lines from a file handle, returns a table of lines
 local function fileToLines(fh)
@@ -105,9 +106,52 @@ function removeWorldMapConfirm(water)
                 removeWorldModel(i, 5000, 0, 0, 0, 13)
             end
         end
+        if defaultWorldOcclusionsEnabled == nil and getOcclusionsEnabled then
+            defaultWorldOcclusionsEnabled = getOcclusionsEnabled()
+        end
         setOcclusionsEnabled(false)
         defaultWorldRemovalApplied = true
     end
+end
+
+-- Restore the stock GTA:SA world after Eagle has removed it.  This must only
+-- run when no Eagle map is loaded (or still unloading), otherwise restored
+-- stock geometry can overlap the map that is about to be streamed.
+function restoreSAWorld()
+    if not (defaultWorldRemovalApplied or defaultWaterLevelApplied) then
+        return true
+    end
+
+    if (resourceElements and next(resourceElements))
+        or (unloadingResources and next(unloadingResources))
+    then
+        outputDebugString2("Cannot restore the GTA:SA world while an Eagle map is still active.", 2)
+        return false
+    end
+
+    if defaultWorldRemovalApplied then
+        if removeDefaultInteriors and restoreGameWorld then
+            restoreGameWorld()
+        elseif restoreAllWorldModels then
+            restoreAllWorldModels()
+        end
+        setOcclusionsEnabled(defaultWorldOcclusionsEnabled ~= false)
+        defaultWorldOcclusionsEnabled = nil
+        defaultWorldRemovalApplied = false
+    end
+
+    if defaultWaterLevelApplied then
+        if resetWaterLevel then
+            resetWaterLevel()
+        else
+            setWaterLevel(0)
+        end
+        defaultWaterLevelApplied = false
+    end
+
+    engineRestreamWorld()
+    outputDebugString2("Restored the stock GTA:SA world.")
+    return true
 end
 
 local function crashZoneAppliesToResource(zone, resourceName)
