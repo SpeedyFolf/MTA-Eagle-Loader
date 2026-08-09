@@ -35,6 +35,10 @@ local restoreIMGModelLinks
 -- native streaming references until a later frame. Delay IMG/model teardown so
 -- those references are released before their backing assets are restored.
 EAGLE_UNLOAD_DELAY_MS = 100
+-- engineRemoveImage initiates a restream. Keep requested TXD slots alive for
+-- one more streaming interval so pending IMG channels can de-stream before
+-- engineFreeTXD releases their backing pool entries.
+EAGLE_TXD_RELEASE_DELAY_MS = 100
 
 function eagleLoaderStopTrace(resourceName, phase)
     triggerServerEvent("eagleLoader:stopTrace", resourceRoot, resourceName, phase)
@@ -558,6 +562,10 @@ local function applyMapDefinition(resourceName, data)
 
         if isNew and tonumber(modelID) then
             if isEngineAllocated and engineFreeModel then
+                -- A definition can fail after its DFF was linked from an IMG.
+                -- Do not leave that native IMG link targeting a freed custom
+                -- slot; this is the same ordering required during map stop.
+                if restoreIMGModelLinks then restoreIMGModelLinks(resourceName, modelID) end
                 engineFreeModel(modelID)
             else
                 if engineResetModelTXDID
@@ -835,11 +843,14 @@ function unloadMapDefinitions(name, onComplete)
                     safeNativeCleanup("reset model LOD distance " .. tostring(ID), engineResetModelLODDistance, ID)
                 end
                 if allocation.engineAllocated then
-                    -- engineFreeModel owns teardown of models returned by
-                    -- engineRequestModel. Restoring an IMG DFF link first can
-                    -- make MTA's streamer dereference that custom allocation
-                    -- while it is being released (core.dll access violation).
-                    eagleLoaderStopTrace(name, "model-" .. tostring(ID) .. "-free-with-img-link")
+                    -- engineImageLinkDFF installs a native link from this
+                    -- model to its IMG archive.  Freeing the model first
+                    -- leaves that link pointing at a released model slot; the
+                    -- IMG streamer can then dereference it on its next pass.
+                    -- Unlink it before engineFreeModel for custom allocations
+                    -- just as we do for stock SA slots and <override>s.
+                    eagleLoaderStopTrace(name, "model-" .. tostring(ID) .. "-restore-img-links")
+                    restoreIMGModelLinks(name, ID)
                     eagleLoaderStopTrace(name, "model-" .. tostring(ID) .. "-free")
                     safeNativeCleanup("free model " .. tostring(ID), engineFreeModel, ID)
                 else
@@ -913,18 +924,14 @@ function unloadMapDefinitions(name, onComplete)
         resourceIDCache[name] = nil
         resourceLoaded[name]  = nil
         mapLoadStartTicks[name] = nil
+        unloadingResources[name] = nil
 
         -- 7. If no maps remain loaded, the SA model-ID pool can be reused.
         if resetSAModelPool and next(resourceElements) == nil then
             resetSAModelPool()
-            -- Requested TXDs are shared by asset name while maps are active.
-            -- Once the last map is gone no model should reference them, so free
-            -- them before eagleLoader itself can be stopped or restarted.
-            freeRequestedTXDs()
         end
 
         outputDebugString2(string.format("Successfully unloaded map definitions for resource: %s", name))
-        unloadingResources[name] = nil
         if onComplete then onComplete() end
     end, EAGLE_UNLOAD_DELAY_MS, 1)
 
@@ -935,6 +942,30 @@ local function unloadMapResource(name)
     unloadMapDefinitions(name, function()
         if unloadResourceIMGs then
             unloadResourceIMGs(name)
+        end
+
+        -- engineRemoveImage restores IMG streaming records and restreams the
+        -- world. MTA's native IMG cleanup specifically warns against doing
+        -- that after TXD pool slots have been freed, because pending channels
+        -- can still reference those slots. Therefore IMG removal happens
+        -- before the final engineFreeTXD. The stock SA world intentionally
+        -- remains removed; callers can explicitly use restoreSAWorld().
+        if next(resourceElements) == nil then
+            -- Keep a restarting map out of this final native cleanup window.
+            -- onResourceStartTimer retries while this flag is set.
+            unloadingResources[name] = true
+            eagleLoaderStopTrace(name, "txd-release-delayed")
+            setTimer(function()
+                -- A different map may have started while this map's IMG was
+                -- de-streaming. Requested TXDs are shared global state, so
+                -- defer their release until the next final-map unload instead
+                -- of freeing slots that the new map could now be using.
+                if next(resourceElements) == nil then
+                    eagleLoaderStopTrace(name, "txd-release-begin")
+                    freeRequestedTXDs()
+                end
+                unloadingResources[name] = nil
+            end, EAGLE_TXD_RELEASE_DELAY_MS, 1)
         end
     end)
 end
