@@ -118,9 +118,6 @@ end
 -- run when no Eagle map is loaded (or still unloading), otherwise restored
 -- stock geometry can overlap the map that is about to be streamed.
 function restoreSAWorld()
-    if not (defaultWorldRemovalApplied or defaultWaterLevelApplied) then
-        return true
-    end
 
     if (resourceElements and next(resourceElements))
         or (unloadingResources and next(unloadingResources))
@@ -130,12 +127,8 @@ function restoreSAWorld()
     end
 
     if defaultWorldRemovalApplied then
-        if removeDefaultInteriors and restoreGameWorld then
-            restoreGameWorld()
-        elseif restoreAllWorldModels then
-            restoreAllWorldModels()
-        end
-        setOcclusionsEnabled(defaultWorldOcclusionsEnabled ~= false)
+        restoreGameWorld()
+        setOcclusionsEnabled(true)
         defaultWorldOcclusionsEnabled = nil
         defaultWorldRemovalApplied = false
     end
@@ -149,7 +142,7 @@ function restoreSAWorld()
         defaultWaterLevelApplied = false
     end
 
-    engineRestreamWorld()
+    engineRestreamWorld(true)
     outputDebugString2("Restored the stock GTA:SA world.")
     return true
 end
